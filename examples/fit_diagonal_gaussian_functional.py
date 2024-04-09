@@ -47,7 +47,7 @@ a0 = 0.1
 a0_reparam = 0.1
 gam = 0.01
 
-# optimization params 
+# optimization params
 num_iters = 1000
 
 exp_name = f"diagGauss_D{D}_S{S}_numc{num_chains}_seed_{seed}_scale_{scale}_niter{num_iters}_g{gam}_a0{a0}_a0rep{a0_reparam}"
@@ -69,6 +69,10 @@ log_pdf = jit(lambda x, params : _log_pdf(x, unflatten(params)))
 vmapped_log_pdf = jit(vmap(log_pdf, (0,None)))
 
 @jit
+def T(eps, mu, v):
+    return mu + jnp.sqrt(jnp.exp(v)) * eps
+
+@jit
 def gaussian_log_pdf(x, mu, Sigma):
     out = -0.5 * (x - mu).T @ jnp.linalg.inv(Sigma) @ (x - mu)
     out = out - 0.5 *  jnp.log(jnp.linalg.det(Sigma))
@@ -76,7 +80,6 @@ def gaussian_log_pdf(x, mu, Sigma):
     return out
 
 vmap_gaussian_log_pdf = vmap(gaussian_log_pdf, (0, None, None))
-
 slice_sample = setup_slice_sampler(log_pdf, D, S, num_chains=num_chains)
 
 # slice reparam loss and gradient
@@ -84,21 +87,47 @@ slice_sample = setup_slice_sampler(log_pdf, D, S, num_chains=num_chains)
 def loss_slice(params, x0, key):
     xs_all = slice_sample(params, x0, key)
     xs = xs_all[:, -1, :]
+
+    # STL estimator
     params = stop_gradient(params)
-    loss = -1.0 * jnp.mean(vmap_gaussian_log_pdf(xs, xstar, Sigma)) #- jnp.sum(0.5 * params[1])
-    loss = loss + jnp.mean(vmapped_log_pdf(xs, params)) # entropy term (grad part)
-    return loss
+
+    # compute ELBO
+    likelihood = -1.0 * jnp.mean(vmap_gaussian_log_pdf(xs, xstar, Sigma)) 
+    entropy = jnp.mean(vmapped_log_pdf(xs, params))
+    return likelihood + entropy # ELBO
+
 grad_slice = jit(grad(loss_slice))
 
 # reparameterization gradient
 def _loss_reparam(params, ds):
-    xs = params[0] + jnp.sqrt(jnp.exp(params[1])) * ds
+    xs = T(ds, params[0], params[1])  # loc-scale transform
     loss = jnp.mean(vmap_gaussian_log_pdf(xs, xstar, Sigma))
     loss = loss - jnp.mean(vmap_gaussian_log_pdf(xs, params[0], jnp.diag(jnp.exp(params[1]))))
     return -1.0 * loss
 loss_reparam = jit(lambda params, ds : _loss_reparam(unflatten(params), ds))
 grad_loss_reparam = jit(grad(loss_reparam))
 
+
+
+
+def _loss_reparam_markov(params, ds):
+    """rep-MALA gradient
+         TODO: this is the function f whose expectation we are computing.
+         Algorithm:
+         
+         1. Sample z ~ N(0, I)
+         2. Compute xhats = G_z(stop_grad(xs))
+         3. let f = ELBO(x, params). compute f(xhat) and f(x) weighted by a 
+         4. return gradient of that.
+         Breakdown: compute score function, sample xhat using score at xs, 
+         compute acceptance probability, return ELBO evaluated at xhat and xs, return gradient of that function instead of the other one. 
+"""
+    xs = params[0] + jnp.sqrt(jnp.exp(params[1])) * ds
+    loss = jnp.mean(vmap_gaussian_log_pdf(xs, xstar, Sigma))
+    loss = loss - jnp.mean(vmap_gaussian_log_pdf(xs, params[0], jnp.diag(jnp.exp(params[1]))))
+    return -1.0 * loss
+loss_reparam_markov = jit(lambda params, ds : _loss_reparam_markov(unflatten(params), ds))
+grad_loss_reparam_markov = jit(grad(loss_reparam_markov))
 
 # try to load results or run experiment
 try:
