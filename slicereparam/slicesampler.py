@@ -2,7 +2,6 @@ import jax.numpy as jnp
 from jax import jit, grad, vmap
 from jax import random
 from jax import lax
-from jax.flatten_util import ravel_pytree
 from functools import partial
 
 from slicereparam.rootfinder import dual_bisect_method, choose_start

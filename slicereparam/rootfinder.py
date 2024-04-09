@@ -1,8 +1,6 @@
 import jax.numpy as jnp
-from jax import jit, grad, vmap
-from jax import random
+from jax import jit, vmap
 from jax import lax
-from jax.flatten_util import ravel_pytree
 from functools import partial
 
 @partial(jit, static_argnums=(0,))

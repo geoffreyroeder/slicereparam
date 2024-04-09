@@ -2,17 +2,15 @@ from jax import config
 config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp
-from jax import jit, grad, vmap, value_and_grad, random
-from jax import lax
+from jax import jit, grad, vmap, random
 from jax import random
-from jax.lax import stop_gradient
 from jax.flatten_util import ravel_pytree
 from jax.scipy import stats 
 from jax.scipy.special import gammaln, logit, expit, logsumexp
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from slicereparam.functional import setup_slice_sampler, setup_slice_sampler_with_args
+from slicereparam.functional import setup_slice_sampler
 
 # import data
 d = pd.read_csv("efron-morris-75-data.csv")

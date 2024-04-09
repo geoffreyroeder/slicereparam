@@ -1,20 +1,14 @@
-from jax.config import config
+from jax import config
 config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp
 from jax import jit, grad, vmap
 from jax import random
 from jax import lax
-from jax import custom_vjp
 from jax.ops import index, index_update
-from jax.flatten_util import ravel_pytree
-from functools import partial
 
 from slicereparam.rootfinder import dual_bisect_method, \
     bisect_method, choose_start, single_choose_start
-
-from inspect import signature
-import warnings 
 
 def setup_reflective(log_pdf, D, S, num_chains=1, w=1.0, reset_iters=10):
     # w is step size
