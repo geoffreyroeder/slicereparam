@@ -5,7 +5,6 @@ import jax.numpy as jnp
 from jax import jit, grad, vmap
 from jax import random
 from jax import lax
-from jax.ops import index, index_update
 
 from slicereparam.rootfinder import dual_bisect_method, \
     bisect_method, choose_start, single_choose_start
@@ -108,7 +107,7 @@ def setup_reflective(log_pdf, D, S, num_chains=1, w=1.0, reset_iters=10):
 
         # initialize variables
         xs = jnp.zeros((num_chains, S+1, D))
-        xs = index_update(xs, index[:, 0, :], x0)
+        xs = xs.at[:, 0, :].set(x0)
         p = ds[:, 0, :] # initial p
         init_val = [xs, p, x0]
 
@@ -125,7 +124,7 @@ def setup_reflective(log_pdf, D, S, num_chains=1, w=1.0, reset_iters=10):
             # xp, p = forwards_step(x, theta, u1, p, w, maxiter=100)
             # need a new u1 at each iteration, but can keep around p.
             x, p = vmap(forwards_step, (0,None,0,0,None))(x, theta, us[:,i], p, w)
-            xs = index_update(xs, index[:, i+1, :], x)
+            xs = xs.at[:, i+1, :].set(x)
             # reset momentum every reset_iters 
             p = lax.cond(jnp.mod(i+1, reset_iters) == 0, 
                          lambda p : ds[:, i, :],

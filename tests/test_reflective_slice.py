@@ -1,21 +1,17 @@
 from jax import config
 config.update("jax_enable_x64", True)
 
+import numpy as np
 import jax.numpy as jnp 
-from jax import jit, grad, vmap
+from jax import jit, vmap
 from jax import random
-from jax import lax
 from jax.flatten_util import ravel_pytree
 from functools import partial
 
 import matplotlib.pyplot as plt
-from jax.scipy.special import expit as sigmoid
-from jax.scipy.special import logsumexp
 
 from slicereparam.reflective import setup_reflective 
 from slicereparam.functional import setup_slice_sampler
-
-import time
 
 key = random.PRNGKey(123)
 D = 2
@@ -51,15 +47,14 @@ x0 = x0[None, :]
 
 key, subkey = random.split(key)
 out = reflective_slice_sampler(params, x0, subkey)
-xs = out[0]
+xs = np.array(out[0])
 key, subkey = random.split(key)
 out2 = slice_sampler(params, x0, subkey)
-xs2 = out2[0]
+xs2 = np.array(out2[0])
 
 plt.figure()
 plt.plot(xs[:, 0], xs[:, 1])
 plt.plot(xs2[:, 0], xs2[:, 1])
-
 # compute KL divergence numerically
 dz=0.025
 z1_range = jnp.arange(-5., 5., dz)
@@ -70,10 +65,11 @@ def q_logz_gauss(z1, z2):
     return log_pdf(jnp.array([z1,z2]), params)
 q_ys_gauss = jnp.exp(q_logz_gauss(z1s, z2s))
 
-
+#%%
 plt.figure(figsize=[8,4])
 plt.subplot(121)
 plt.contourf(z1_range, z2_range, q_ys_gauss)#, vmin=0.0,vmax=0.45)
+
 plt.plot(xs[:, 0], xs[:, 1], 'r', '-.', label="reflective")
 plt.plot(xs2[:, 0], xs2[:, 1], 'b', '-.', label="random")
 # plt.title("target")
