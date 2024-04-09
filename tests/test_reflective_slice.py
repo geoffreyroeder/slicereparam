@@ -80,6 +80,7 @@ plt.subplot(122)
 plt.contourf(z1_range, z2_range, q_ys_gauss)#, vmin=0.0,vmax=0.45)
 plt.plot(xs[:, 0], xs[:, 1], 'r.', label="reflective")
 plt.plot(xs2[:, 0], xs2[:, 1], 'b.', label="random")
+
 # plt.title("target")
 plt.xlim([-3,3])
 plt.ylim([-3,3])
