@@ -5,7 +5,6 @@ import jax.numpy as jnp
 from jax import jit, grad, vmap
 from jax import random
 from jax import lax
-from jax.ops import index, index_update
 from jax.flatten_util import ravel_pytree
 from functools import partial
 

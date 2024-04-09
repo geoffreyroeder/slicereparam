@@ -4,7 +4,6 @@ config.update("jax_enable_x64", True)
 import jax.numpy as jnp 
 from jax import jit, grad, vmap
 from jax import random
-from jax.ops import index, index_update
 from jax.flatten_util import ravel_pytree
 from jax.scipy.special import logsumexp
 
@@ -237,8 +236,8 @@ def test_custom_vjp_finite_difference():
             for m, v in enumerate(jnp.eye(D)):
                 x01 = x0[nc] - dx * v
                 x02 = x0[nc] + dx * v
-                x01 = index_update(x0, index[nc, :], x01)
-                x02 = index_update(x0, index[nc, :], x02)
+                x01 = x0.at[nc, :].set(x01)
+                x02 = x0.at[nc, :].set(x02)
                 xs1 = slice_sample(params, x01, subkeys[1])
                 xs2 = slice_sample(params, x02, subkeys[1])
                 loss1 = loss(xs1)
