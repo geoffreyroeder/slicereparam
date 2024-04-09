@@ -2,7 +2,6 @@ import jax.numpy as jnp
 from jax import jit, grad, vmap
 from jax import random
 from jax import lax
-from jax.ops import index, index_update
 from jax.flatten_util import ravel_pytree
 from functools import partial
 
@@ -88,22 +87,21 @@ class slicesampler(object):
 
     def forwards(self, S, theta, x, us, ds, y):
         xs = jnp.zeros((self.num_chains, S+1, self.D))
-        xs = index_update(xs, index[:, 0, :], x)
+        xs = xs.at[:, 0, :].set(x)
         xLs = jnp.zeros((self.num_chains, S, self.D))
         xRs = jnp.zeros((self.num_chains, S, self.D))
         alphas = jnp.zeros((self.num_chains, S, 2))
         init_val = [xs, xLs, xRs, alphas, x]
 
         def body_fun(i, val):
-            xs, xLs, xRs, alphas, x = val 
+            xs, xLs, xRs, alphas, x = val
             x, x_L, x_R, alpha = vmap(self.forwards_step, (0,None,0,0,0,0))(x, theta, us[:,i,0], us[:,i,1], ds[:,i,:], y)
-            xs = index_update(xs, index[:, i+1, :], x)
-            xLs = index_update(xLs, index[:, i, :], x_L)
-            xRs = index_update(xRs, index[:, i, :], x_R)
-            alphas = index_update(alphas, index[:, i, :], alpha)
+            xs = xs.at[:, i+1, :].set(x)
+            xLs = xLs.at[:, i, :].set(x_L)
+            xRs = xRs.at[:, i, :].set(x_R)
+            alphas = alphas.at[:, i, :].set(alpha)
             val = [xs, xLs, xRs, alphas, x]
             return val
-
         xs, xLs, xRs, alphas, x = lax.fori_loop(0, S, body_fun, init_val)
         return xs, xLs, xRs, alphas
 

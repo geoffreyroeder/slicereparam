@@ -6,6 +6,7 @@ from jax import jit, grad, vmap
 from jax import random
 from jax import lax
 from jax import custom_vjp
+from jax.ops import index, index_update
 from jax.flatten_util import ravel_pytree
 from functools import partial
 
@@ -49,7 +50,7 @@ def setup_slice_sampler(log_pdf, D, S, num_chains=1):
         ds = ds.reshape((num_chains, S, D))
 
         xs = jnp.zeros((num_chains, S+1, D))
-        xs = xs.at[:, 0, :].set(x0)
+        xs = index_update(xs, index[:, 0, :], x0)
         xLs = jnp.zeros((num_chains, S, D))
         xRs = jnp.zeros((num_chains, S, D))
         alphas = jnp.zeros((num_chains, S, 2))
@@ -58,10 +59,10 @@ def setup_slice_sampler(log_pdf, D, S, num_chains=1):
         def body_fun(i, val):
             xs, xLs, xRs, alphas, x = val 
             x, x_L, x_R, alpha = vmap(forwards_step, (0,None,0,0,0))(x, theta, us[:,i,0], us[:,i,1], ds[:,i,:])
-            xs = xs.at[:, i+1, :].set(x)
-            xLs = xLs.at[:, i, :].set(x_L)
-            xRs = xRs.at[:, i, :].set(x_R)
-            alphas = alphas.at[:, i, :].set(alpha)
+            xs = index_update(xs, index[:, i+1, :], x)
+            xLs = index_update(xLs, index[:, i, :], x_L)
+            xRs = index_update(xRs, index[:, i, :], x_R)
+            alphas = index_update(alphas, index[:, i, :], alpha)
             val = [xs, xLs, xRs, alphas, x]
             return val
 
@@ -181,19 +182,19 @@ def setup_slice_sampler_with_args(log_pdf, D, S, num_chains=1):
         ds = ds.reshape((num_chains, S, D))
 
         xs = jnp.zeros((num_chains, S+1, D))
-        xs = xs.at[:, 0, :].set(x0)
+        xs = index_update(xs, index[:, 0, :], x0)
         xLs = jnp.zeros((num_chains, S, D))
         xRs = jnp.zeros((num_chains, S, D))
         alphas = jnp.zeros((num_chains, S, 2))
         init_val = [xs, xLs, xRs, alphas, x0]
 
         def body_fun(i, val):
-            xs, xLs, xRs, alphas, x = val
+            xs, xLs, xRs, alphas, x = val 
             x, x_L, x_R, alpha = vmap(forwards_step, (0,None,0,0,0,0))(x, theta, us[:,i,0], us[:,i,1], ds[:,i,:], ys)
-            xs = xs.at[:, i+1, :].set(x)
-            xLs = xLs.at[:, i, :].set(x_L)
-            xRs = xRs.at[:, i, :].set(x_R)
-            alphas = alphas.at[:, i, :].set(alpha)
+            xs = index_update(xs, index[:, i+1, :], x)
+            xLs = index_update(xLs, index[:, i, :], x_L)
+            xRs = index_update(xRs, index[:, i, :], x_R)
+            alphas = index_update(alphas, index[:, i, :], alpha)
             val = [xs, xLs, xRs, alphas, x]
             return val
 
