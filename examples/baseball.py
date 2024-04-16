@@ -12,18 +12,28 @@ import time
 import matplotlib.pyplot as plt
 from slicereparam.functional import setup_slice_sampler
 
-config.update("jax_enable_x64", True)
+# config.update("jax_enable_x64", True)
+
+# --- Set up load and save paths 
 parent_dir = Path(__file__).resolve().parent.parent
-RESULTS_DIR = parent_dir / "results/sensitivity"  # Define the directory to save results
+results_dir = parent_dir / "results/sensitivity"  # Define the directory to save results
+figs_dir = parent_dir / "figs/sensitivity"  # Define the directory to save figures
+
+# Create the directories if they do not exist
+if not os.path.exists(results_dir):
+    os.makedirs(results_dir)
+if not os.path.exists(figs_dir):
+    os.makedirs(figs_dir)
+
 data_path = parent_dir / "data/efron-morris-75-data.tsv"
 
 def save_results(data, file_name):
-    path = os.path.join(RESULTS_DIR, file_name)
+    path = os.path.join(results_dir, file_name)
     with open(path, 'wb') as f:
         jnp.save(f, data)
 
 def load_results_or_compute(file_name, compute_func, *args, **kwargs):
-    path = os.path.join(RESULTS_DIR, file_name)
+    path = os.path.join(results_dir, file_name)
     if os.path.exists(path):
         print(f"Loading saved results from {file_name}")
         with open(path, 'rb') as f:
@@ -91,8 +101,8 @@ vmap_grad_log_posterior = jit(vmap(grad_log_posterior, (0, None)))
 # Set up slice sampler
 key = random.PRNGKey(13131313)
 num_params = params.shape[0]
-num_samples = 20000
-burn_in = 2000
+num_samples = 2000
+burn_in = 200
 num_chains = 10
 slice_sample = setup_slice_sampler(log_posterior, num_params, num_samples, num_chains)
 
@@ -110,8 +120,7 @@ def run_slice_sample_and_save(key):
     return slice_sample_output
 
 slice_sample_output_file_name = "slice_sample_output_{}_{}_{}.npy".format(pareto_shape[0], num_chains, num_samples)
-key, subkey = random.split(key)
-slice_sample_output = load_results_or_compute(slice_sample_output_file_name, run_slice_sample_and_save, subkey)
+slice_sample_output = load_results_or_compute(slice_sample_output_file_name, run_slice_sample_and_save, subkeys[3])
 
 # Evaluate held-out log-likelihood
 def evaluate_heldout_ll(params_samples):
@@ -130,11 +139,12 @@ grad_mean_phi = jit(grad(mean_phi))
 
 key, subkey = random.split(key)
 final_slice_sample_output_file_name = "final_slice_sample_output_{}_{}_{}.npy".format(pareto_shape[0], num_chains, num_samples)
+# TODO this is already done above. bug?
 slice_sample_output = load_results_or_compute(final_slice_sample_output_file_name, run_slice_sample_and_save, subkey)
 
 # Estimate sensitivity of the second moment of phi to the Pareto shape parameter
-num_samples2 = 20000
-burn_in = 2000
+num_samples2 = 2000
+burn_in = 200
 num_chains2 = 1
 slice_sample2 = setup_slice_sampler(log_posterior, num_params, num_samples2, num_chains2)
 
@@ -161,7 +171,7 @@ def plot_logit_phi_and_log_kappa(params_samples):
     plt.title("log $\kappa$")
     plt.xlim([1.0, 5.5])
     plt.tight_layout()
-    plt.savefig("logit_phi_and_log_kappa.png")
+    plt.savefig(figs_dir / "logit_phi_and_log_kappa.png")
     plt.close()
 
 # Printing functions
@@ -194,30 +204,40 @@ key, subkey = random.split(key)
 params_samples2 = load_results_or_compute(params_samples2_file_name, slice_sample, pareto_shape2, params_init, subkey)
 params_samples2 = params_samples2[:, burn_in:, :].reshape((remaining*num_chains, num_params), order='F')
 
-ll_mean1 = evaluate_heldout_ll(params_samples1)
-ll_mean2 = evaluate_heldout_ll(params_samples2)
-fd_grad = (ll_mean2 - ll_mean1) / (2.0 * dk)
+ll_mean1_file_name = "ll_mean1_{}_{}_{}.npy".format(pareto_shape1[0], num_chains, num_samples)
+ll_mean1 = load_results_or_compute(ll_mean1_file_name, evaluate_heldout_ll, params_samples1)
+
+ll_mean2_file_name = "ll_mean2_{}_{}_{}.npy".format(pareto_shape2[0], num_chains, num_samples)
+ll_mean2 = load_results_or_compute(ll_mean2_file_name, evaluate_heldout_ll, params_samples2)
+
+fd_grad_file_name = "fd_grad_{}_{}_{}.npy".format(pareto_shape[0], num_chains, num_samples)
+fd_grad = load_results_or_compute(fd_grad_file_name, lambda: (ll_mean2 - ll_mean1) / (2.0 * dk))
 
 key, subkey = random.split(key)
-reparam_grad = grad_mean_phi(pareto_shape, params_init, subkey)
+reparam_grad_file_name = "reparam_grad_{}_{}_{}.npy".format(pareto_shape[0], num_chains, num_samples)
+reparam_grad = load_results_or_compute(reparam_grad_file_name, grad_mean_phi, pareto_shape, params_init, subkey)
 
-sample_grads = vmap_grad_log_posterior(params_samples, pareto_shape)
-score_grad = jnp.cov(expit(params_samples[:, 0]), sample_grads[:, 0])[0, 1]
+sample_grads_file_name = "sample_grads_{}_{}_{}.npy".format(pareto_shape[0], num_chains, num_samples)
+sample_grads = load_results_or_compute(sample_grads_file_name, vmap_grad_log_posterior, params_samples, pareto_shape)
+
+score_grad_file_name = "score_grad_{}_{}_{}.npy".format(pareto_shape[0], num_chains, num_samples)
+score_grad = load_results_or_compute(score_grad_file_name, lambda: jnp.cov(expit(params_samples[:, 0]), sample_grads[:, 0])[0, 1])
 
 # Print gradient estimates
 print_gradient_estimates(reparam_grad, score_grad, fd_grad)
-
 
 # Define the range of alpha values
 alpha_vals = jnp.arange(1.0, 2.05, 0.05)
 
 # Compute the local sensitivity estimates for each alpha value using vmap
+local_sensitivities_file_name = "local_sensitivities_{}_{}_{}.npy".format(pareto_shape[0], num_chains, num_samples)
 local_sensitivities_fn = vmap(lambda alpha: grad_mean_phi(jnp.array([alpha]), params_init, subkey))
-local_sensitivities = local_sensitivities_fn(alpha_vals)
+local_sensitivities = load_results_or_compute(local_sensitivities_file_name, local_sensitivities_fn, alpha_vals)
 
 # Compute the hierarchical mean hit probability for each alpha value using vmap
+mean_hit_probs_file_name = "mean_hit_probs_{}_{}_{}.npy".format(pareto_shape[0], num_chains, num_samples)
 mean_hit_probs_fn = vmap(lambda alpha: mean_phi(jnp.array([alpha]), params_init, subkey))
-mean_hit_probs = mean_hit_probs_fn(alpha_vals)
+mean_hit_probs = load_results_or_compute(mean_hit_probs_file_name, mean_hit_probs_fn, alpha_vals)
 
 # Plot the results
 plt.figure(figsize=(8, 6))
@@ -228,5 +248,5 @@ plt.ylabel('Value')
 plt.title('Local sensitivity of hierarchical mean hit probability')
 plt.legend()
 plt.tight_layout()
-plt.savefig("local_sensitivity_plot.png")
+plt.savefig(figs_dir / "local_sensitivity_plot.png")
 plt.close()
