@@ -14,7 +14,7 @@ from slicereparam.functional import setup_slice_sampler
 
 config.update("jax_enable_x64", True)
 parent_dir = Path(__file__).resolve().parent.parent
-RESULTS_DIR = parent_dir / "results"  # Define the directory to save results
+RESULTS_DIR = parent_dir / "results/sensitivity"  # Define the directory to save results
 data_path = parent_dir / "data/efron-morris-75-data.tsv"
 
 def save_results(data, file_name):
@@ -92,6 +92,7 @@ vmap_grad_log_posterior = jit(vmap(grad_log_posterior, (0, None)))
 key = random.PRNGKey(13131313)
 num_params = params.shape[0]
 num_samples = 20000
+burn_in = 2000
 num_chains = 10
 slice_sample = setup_slice_sampler(log_posterior, num_params, num_samples, num_chains)
 
@@ -132,8 +133,8 @@ final_slice_sample_output_file_name = "final_slice_sample_output_{}_{}_{}.npy".f
 slice_sample_output = load_results_or_compute(final_slice_sample_output_file_name, run_slice_sample_and_save, subkey)
 
 # Estimate sensitivity of the second moment of phi to the Pareto shape parameter
-num_samples2 = 1000
-burn_in = 500
+num_samples2 = 20000
+burn_in = 2000
 num_chains2 = 1
 slice_sample2 = setup_slice_sampler(log_posterior, num_params, num_samples2, num_chains2)
 
