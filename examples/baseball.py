@@ -1,192 +1,231 @@
-from jax import config
-config.update("jax_enable_x64", True)
-
-import jax.numpy as jnp
-from jax import jit, grad, vmap, random
-from jax import random
-from jax.flatten_util import ravel_pytree
-from jax.scipy import stats
-from jax.scipy.special import gammaln, logit, expit, logsumexp
-import pandas as pd
-import matplotlib.pyplot as plt
-import time
-
-from slicereparam.functional import setup_slice_sampler
-
-# import data
-# print current directory
+from functools import partial
 from pathlib import Path
 import pandas as pd
-#%%
-print(Path.cwd())
-# find parent directory of directory that script is running in
+import os
+import jax.numpy as jnp
+from jax import grad, jit, random, vmap
+from jax.flatten_util import ravel_pytree
+from jax.scipy.special import expit, gammaln, logit, logsumexp
+from jax.scipy import stats
+from jax import config
+import time
+import matplotlib.pyplot as plt
+from slicereparam.functional import setup_slice_sampler
+
+config.update("jax_enable_x64", True)
 parent_dir = Path(__file__).resolve().parent.parent
+RESULTS_DIR = parent_dir / "results"  # Define the directory to save results
+data_path = parent_dir / "data/efron-morris-75-data.tsv"
 
-d = pd.read_csv(parent_dir / "data/efron-morris-75-data.tsv", sep='\t', lineterminator='\n')
-#%%
-y = jnp.array(d['Hits'].values) # hits (numbed of successes)
-trials = jnp.array(d['At-Bats'].values) # at bats (number of trials)
-N = y.shape[0] #number of players
-data = jnp.hstack((y[:, None], trials[:, None]))
+def save_results(data, file_name):
+    path = os.path.join(RESULTS_DIR, file_name)
+    with open(path, 'wb') as f:
+        jnp.save(f, data)
 
-y_test = jnp.array(d['SeasonHits'].values) - y
-trials_test = jnp.array(d['RemainingAt-Bats'].values)
+def load_results_or_compute(file_name, compute_func, *args, **kwargs):
+    path = os.path.join(RESULTS_DIR, file_name)
+    if os.path.exists(path):
+        print(f"Loading saved results from {file_name}")
+        with open(path, 'rb') as f:
+            return jnp.load(f)
+    else:
+        print(f"No saved results, computing for {file_name}")
+        result = compute_func(*args, **kwargs)
+        print(f"Saving results to {file_name}")
+        save_results(result, file_name)
+        return result
 
-# temp params
-log_phi = -1.0
-log_kappa = 2.0
-logits = -1.0 * jnp.ones((N,))
-_x = [log_phi, log_kappa, logits]
-x, x_unflatten = ravel_pytree(_x)
+data = pd.read_csv(data_path, sep='\t', lineterminator='\n')
 
+# Extract data from the dataset
+hits = jnp.array(data['Hits'].values)
+at_bats = jnp.array(data['At-Bats'].values)
+num_players = hits.shape[0]
+season_hits_test = jnp.array(data['SeasonHits'].values) - hits
+remaining_at_bats_test = jnp.array(data['RemainingAt-Bats'].values)
+
+# Initialize parameters
+log_phi_init = -1.0
+log_kappa_init = 2.0
+logits_init = -1.0 * jnp.ones((num_players,))
+_params = [log_phi_init, log_kappa_init, logits_init]
+params, params_unflatten = ravel_pytree(_params)
+
+# Define the binomial log-likelihood function
 def _binomial_logpdf(k, n, p):
     logp = 0.0
     logp += k * jnp.log(p)
     logp += (n-k) * jnp.log(1.0 - p)
     logp += gammaln(n+1) - gammaln(k+1) - gammaln(n-k+1)
     return logp
+
 binomial_logpdf = vmap(_binomial_logpdf, (0, 0, 0))
 
-k_scale = jnp.array([1.5])
-k_scale2 = jnp.array([0.5])
+# Define the Pareto distribution shape parameter
+pareto_shape = jnp.array([1.5])
 
-def _heldout_logp(x):
-    _, _, logits = x_unflatten(x)
+# Define the held-out log-likelihood function
+def _heldout_logp(params):
+    _, _, logits = params_unflatten(params)
     theta = expit(logits)
-    return _binomial_logpdf(y_test, trials_test, theta)
+    return _binomial_logpdf(season_hits_test, remaining_at_bats_test, theta)
+
 heldout_logp = vmap(_heldout_logp, (0))
 
-
-# def log_pdf(x, k_scale, data):
-def log_pdf(x, k_scale):
-    logit_phi, log_kappam1, logits = x_unflatten(x)
+# Define the log-posterior function
+def log_posterior(params, pareto_shape):
+    logit_phi, log_kappam1, logits = params_unflatten(params)
     phi = expit(logit_phi)
     theta = expit(logits)
     kappa = jnp.exp(log_kappam1) + 1.0
     logp = 0.0
     logp += stats.uniform.logpdf(phi)
-    logp += stats.pareto.logpdf(kappa, k_scale[0], loc=1.0)
+    logp += stats.pareto.logpdf(kappa, pareto_shape[0], loc=1.0)
     logp += jnp.sum(stats.beta.logpdf(theta, phi * kappa, (1.-phi) * kappa))
-    logp += jnp.sum(_binomial_logpdf(y, trials, theta))
+    logp += jnp.sum(_binomial_logpdf(hits, at_bats, theta))
     return logp
-grad_log_pdf = grad(log_pdf, argnums=(1))
-vmap_grad_log_pdf = jit(vmap(grad_log_pdf, (0, None)))
 
+grad_log_posterior = grad(log_posterior, argnums=(1))
+vmap_grad_log_posterior = jit(vmap(grad_log_posterior, (0, None)))
+
+# Set up slice sampler
 key = random.PRNGKey(13131313)
-D = x.shape[0]
-S = 4000
+num_params = params.shape[0]
+num_samples = 20000
 num_chains = 10
-slice_sample = setup_slice_sampler(log_pdf, D, S, num_chains)
-
+slice_sample = setup_slice_sampler(log_posterior, num_params, num_samples, num_chains)
 
 key, *subkeys = random.split(key, 4)
 log_phi_init = logit(0.2 + 0.1 * random.uniform(subkeys[0], (num_chains, 1)))
 log_kappa_init = 2.0 + 3.0 * random.uniform(subkeys[1], (num_chains, 1))
-logits_init = logit(0.25 + 0.1 * random.uniform(subkeys[2], (num_chains, D-2)))
-x_in = jnp.hstack((log_phi_init, log_kappa_init, logits_init))
+logits_init = logit(0.25 + 0.1 * random.uniform(subkeys[2], (num_chains, num_params-2)))
+params_init = jnp.hstack((log_phi_init, log_kappa_init, logits_init))
 
+def run_slice_sample_and_save(key):
+    key, subkey = random.split(key)
+    start_time = time.time()
+    slice_sample_output = slice_sample(pareto_shape, params_init, subkey)
+    print("Slice sample execution time: %s seconds" % (time.time() - start_time))
+    return slice_sample_output
+
+slice_sample_output_file_name = "slice_sample_output_{}_{}_{}.npy".format(pareto_shape[0], num_chains, num_samples)
 key, subkey = random.split(key)
-start_time = time.time()
-out = slice_sample(k_scale, x_in, subkey)
-print("Slice sample execution time: %s seconds" % (time.time() - start_time))
-out2 = out[:, 2000:, :]
-xs = out2.reshape((2000*num_chains,D), order='F')
-#%%
-plt.figure()
-plt.plot(xs[:, 2], xs[:, 1], '.')
-#%%
-plt.figure()
-plt.subplot(121)
-plt.hist(xs[:,0], bins=35, density=True)
-plt.title("logit $\phi$")
-plt.xlim([-1.6, -0.2])
-plt.subplot(122)
-log_km1 = xs[:,1]
-kappas = jnp.exp(log_km1) + 1.0
-log_kappas = jnp.log(kappas)
-plt.hist(log_kappas, bins=35, density=True)
-plt.title("log $\kappa$")
-plt.xlim([1.0, 5.5])
-#%%
-def evaluate_ll(xs):
-    logps = heldout_logp(xs)
-    log_ys_test = logsumexp(logps, axis=0) - jnp.log(xs.shape[0])
+slice_sample_output = load_results_or_compute(slice_sample_output_file_name, run_slice_sample_and_save, subkey)
+
+# Evaluate held-out log-likelihood
+def evaluate_heldout_ll(params_samples):
+    logps = heldout_logp(params_samples)
+    log_ys_test = logsumexp(logps, axis=0) - jnp.log(params_samples.shape[0])
     return jnp.sum(log_ys_test)
 
-def meank(k_scale, x_in, key):
-    start_time = time.time()
-    out = slice_sample(k_scale, x_in, key)
-    print("Slice sample execution time: %s seconds" % (time.time() - start_time))
-    out = out[:, 2000:, :]
-    xs = out.reshape((2000*num_chains,D), order='F')
-    return evaluate_ll(xs)
-grad_meank = jit(grad(meank))
+# Estimate sensitivity of the first moment of phi to the Pareto shape parameter
+def mean_phi(pareto_shape, params_init, key):
+    slice_sample_output = slice_sample(pareto_shape, params_init, key)
+    slice_sample_output = slice_sample_output[:, burn_in:, :]
+    params_samples = slice_sample_output.reshape((remaining*num_chains, num_params), order='F')
+    return evaluate_heldout_ll(params_samples)
+
+grad_mean_phi = jit(grad(mean_phi))
 
 key, subkey = random.split(key)
-start_time = time.time()
-out = slice_sample(k_scale, x_in, subkey)
-print("Slice sample execution time: %s seconds" % (time.time() - start_time))
-out2 = out[:, 2000:, :]
-xs = out2.reshape((2000*num_chains,D), order='F')
-#%%
-dk = 1e-3
-k_scale1 = k_scale - dk
-k_scale2 = k_scale + dk
-start_time = time.time()
-out1 = slice_sample(k_scale1, x_in, subkey)
-print("Slice sample execution time for k_scale1: %s seconds" % (time.time() - start_time))
-out1 = out1[:, 2000:, :]
-xs1 = out1.reshape((2000*num_chains,D), order='F')
-start_time = time.time()
-out2 = slice_sample(k_scale2, x_in, subkey)
-print("Slice sample execution time for k_scale2: %s seconds" % (time.time() - start_time))
-out2 = out2[:, 2000:, :]
-xs2 = out2.reshape((2000*num_chains,D), order='F')
-lk_mean1 = evaluate_ll(xs1)
-lk_mean2 = evaluate_ll(xs2)
-grad_k = (lk_mean2 - lk_mean1) / (2.0 * dk)
+final_slice_sample_output_file_name = "final_slice_sample_output_{}_{}_{}.npy".format(pareto_shape[0], num_chains, num_samples)
+slice_sample_output = load_results_or_compute(final_slice_sample_output_file_name, run_slice_sample_and_save, subkey)
 
-grad_val_reparam = grad_meank(k_scale, x_in, subkey)
-phi_mean = jnp.mean(expit(xs[:, 0]))
-N_samp = xs.shape[0]
-cost_x = expit(xs[:, 0])
-sample_grads = vmap_grad_log_pdf(xs, k_scale)
-grad_val_score = jnp.cov(cost_x, sample_grads[:, 0])[0, 1]
-
-print("FD: ", grad_k)
-print("Reparam: ", grad_val_reparam)
-print("Score: ", grad_val_score)
-#%%
-def sample_covariance(x1, x2):
-    assert x1.shape[0] == x2.shape[0]
-    x1_mean = jnp.mean(x1)
-    x2_mean = jnp.mean(x2)
-    N_len = x1.shape[0]
-    return 1.0 / (N_len-1.0) * jnp.sum((x1 - x1_mean) * (x2 - x2_mean))
-vmap_sample_covariance = jit(vmap(sample_covariance, (0, 0)))
-
-
-S2 = 1000
+# Estimate sensitivity of the second moment of phi to the Pareto shape parameter
+num_samples2 = 1000
 burn_in = 500
 num_chains2 = 1
-slice_sample2 = setup_slice_sampler(log_pdf, D, S2, num_chains2)
-def meank(k_scale, x_in, key):
-    start_time = time.time()
-    out = slice_sample2(k_scale, x_in, key)
-    print("Slice sample2 execution time: %s seconds" % (time.time() - start_time))
-    out = out[:, burn_in:, :]
-    xs = out.reshape(((S2-burn_in)*num_chains2,D), order='F')
-    return jnp.mean(expit(xs[:, 2]))
-grad_meank = jit(grad(meank))
+slice_sample2 = setup_slice_sampler(log_posterior, num_params, num_samples2, num_chains2)
+
+def mean_phi_squared(pareto_shape, params_init, key):
+    slice_sample_output = slice_sample2(pareto_shape, params_init, key)
+    slice_sample_output = slice_sample_output[:, burn_in:, :]
+    params_samples = slice_sample_output.reshape(((num_samples2-burn_in)*num_chains2, num_params), order='F')
+    return jnp.mean(expit(params_samples[:, 2]))
+
+grad_mean_phi_squared = jit(grad(mean_phi_squared))
+
+# Plotting functions
+def plot_logit_phi_and_log_kappa(params_samples):
+    plt.figure()
+    plt.subplot(121)
+    plt.hist(params_samples[:,0], bins=35, density=True)
+    plt.title("logit $\phi$")
+    plt.xlim([-1.6, -0.2])
+    plt.subplot(122)
+    log_km1 = params_samples[:,1]
+    kappas = jnp.exp(log_km1) + 1.0
+    log_kappas = jnp.log(kappas)
+    plt.hist(log_kappas, bins=35, density=True)
+    plt.title("log $\kappa$")
+    plt.xlim([1.0, 5.5])
+    plt.tight_layout()
+    plt.savefig("logit_phi_and_log_kappa.png")
+    plt.close()
+
+# Printing functions
+def print_gradient_estimates(reparam_grad, score_grad, fd_grad):
+    print("Reparameterization gradient: ", reparam_grad)
+    print("Score function gradient: ", score_grad)
+    print("Finite difference gradient: ", fd_grad)
+
+# Plot logit phi and log kappa
+burn_in = int(0.1*num_samples)
+slice_sample_output = slice_sample_output[:, burn_in:, :]
+remaining = num_samples - burn_in
+params_samples = slice_sample_output.reshape((remaining*num_chains, num_params), order='F')
+plot_logit_phi_and_log_kappa(params_samples)
+
+# Estimate gradients
+key = random.PRNGKey(13131313)
+key, subkey = random.split(key)
+dk = 1e-3
+pareto_shape1 = pareto_shape - dk
+pareto_shape2 = pareto_shape + dk 
+
+params_samples1_file_name = "params_samples1_{}_{}_{}.npy".format(pareto_shape1[0], num_chains, num_samples)
+key, subkey = random.split(key)
+params_samples1 = load_results_or_compute(params_samples1_file_name, slice_sample, pareto_shape1, params_init, subkey)
+params_samples1 = params_samples1[:, burn_in:, :].reshape((remaining*num_chains, num_params), order='F')
+
+params_samples2_file_name = "params_samples2_{}_{}_{}.npy".format(pareto_shape2[0], num_chains, num_samples)
+key, subkey = random.split(key)
+params_samples2 = load_results_or_compute(params_samples2_file_name, slice_sample, pareto_shape2, params_init, subkey)
+params_samples2 = params_samples2[:, burn_in:, :].reshape((remaining*num_chains, num_params), order='F')
+
+ll_mean1 = evaluate_heldout_ll(params_samples1)
+ll_mean2 = evaluate_heldout_ll(params_samples2)
+fd_grad = (ll_mean2 - ll_mean1) / (2.0 * dk)
 
 key, subkey = random.split(key)
-start_time = time.time()
-reparam_grad = grad_meank(k_scale, x_in[:num_chains2], subkey)
-print("Slice sample2 execution for reparam grad: %s seconds" % (time.time() - start_time))
+reparam_grad = grad_mean_phi(pareto_shape, params_init, subkey)
 
-out = slice_sample2(k_scale, x_in[:num_chains2], subkey)
-out = out[:, burn_in:, :]
-xs2 = out.reshape(((S2-burn_in)*num_chains2,D), order='F')
+sample_grads = vmap_grad_log_posterior(params_samples, pareto_shape)
+score_grad = jnp.cov(expit(params_samples[:, 0]), sample_grads[:, 0])[0, 1]
 
-sample_grads = vmap_grad_log_pdf(xs2, k_scale)
-# score_grad
+# Print gradient estimates
+print_gradient_estimates(reparam_grad, score_grad, fd_grad)
+
+
+# Define the range of alpha values
+alpha_vals = jnp.arange(1.0, 2.05, 0.05)
+
+# Compute the local sensitivity estimates for each alpha value using vmap
+local_sensitivities_fn = vmap(lambda alpha: grad_mean_phi(jnp.array([alpha]), params_init, subkey))
+local_sensitivities = local_sensitivities_fn(alpha_vals)
+
+# Compute the hierarchical mean hit probability for each alpha value using vmap
+mean_hit_probs_fn = vmap(lambda alpha: mean_phi(jnp.array([alpha]), params_init, subkey))
+mean_hit_probs = mean_hit_probs_fn(alpha_vals)
+
+# Plot the results
+plt.figure(figsize=(8, 6))
+plt.plot(alpha_vals, mean_hit_probs, 'o-', label='Hierarchical mean hit probability')
+plt.plot(alpha_vals, local_sensitivities, 'o-', label='Local sensitivity estimate')
+plt.xlabel(r'Pareto shape parameter $\alpha$')
+plt.ylabel('Value')
+plt.title('Local sensitivity of hierarchical mean hit probability')
+plt.legend()
+plt.tight_layout()
+plt.savefig("local_sensitivity_plot.png")
+plt.close()
