@@ -1,4 +1,4 @@
-from jax.config import config
+from jax import config, vmap
 config.update("jax_enable_x64", True)
 
 import jax.numpy as np 
@@ -142,7 +142,7 @@ def forwards_step(x, theta, u1, u2, d, aL, bR):
     alphas = np.array([z_L, z_R])
     return x, x_L, x_R, alphas
 
-# @jit
+
 def forwards(S, theta, x, us, ds):
     xs = [x]
     xLs = []
@@ -159,6 +159,41 @@ def forwards(S, theta, x, us, ds):
         xRs.append(x_R)
         alphas.append(alpha)
     return np.array(xs), np.array(xLs), np.array(xRs), np.array(alphas)
+
+
+def forwards_step(self, x, theta, u1, u2, d):#, aL, bR):
+    func = lambda alpha : self.log_pdf(x + alpha * d, theta) - self.log_pdf(x, theta) - np.log(u1) # root
+    aL, bR = choose_start(func)
+    z_L, z_R = dual_bisect_method(func, aL=aL, bL=-1e-10, aR=1e-10, bR=bR)
+    x_L = x + d*z_L
+    x_R = x + d*z_R
+    x = (1 - u2) * x_L + u2 * x_R
+    alphas = np.array([z_L, z_R])
+    return x, x_L, x_R, alphas
+
+def vmapped_forwards_step(x, theta, u1, u2, d):
+    return (vmap(forwards_step, (0,None,0,0,0)))
+
+def forwards(S, theta, x, us, ds, num_chains=1):
+    xs = np.zeros((S+1, num_chains, D))
+    xs = xs.at[0, :, :].set(x)
+    xLs = np.zeros((S, num_chains, D))
+    xRs = np.zeros((S, num_chains, D))
+    alphas = np.zeros((S, num_chains, 2))
+    init_val = [xs, xLs, xRs, alphas, x]
+
+    def body_fun(i, val):
+        xs, xLs, xRs, alphas, x = val
+        x, x_L, x_R, alpha = vmapped_forwards_step(x, theta, us[i,:,0], us[i,:,1], ds[i])
+        xs = xs.at[i+1, :, :].set(x)
+        xLs = xLs.at[i, :, :].set(x_L)
+        xRs = xRs.at[i, :, :].set(x_R)
+        alphas = alphas.at[i, :, :].set(alpha)
+        val = [xs, xLs, xRs, alphas, x]
+        return val
+
+    xs, xLs, xRs, alphas, x = lax.fori_loop(0, S, body_fun, init_val)
+    return xs, xLs, xRs, alphas
 
 def init_random_params(scale, layer_sizes, key):
     """Build a list of (weights, biases) tuples,
@@ -322,7 +357,9 @@ def backwards3(S, theta, us, ds, xs, xLs, xRs, alphas, dL_dxs, ys):
     return dL_dtheta + loss_grad_params(theta, xs[1:], ys)
 
 # test functions
-S = 64 # number of samples
+# takes about 8500 GB, 17000, 34000, 42000 for 5
+GPU_MULTIPLIER = 5
+S = 64*GPU_MULTIPLIER # number of samples
 key, *subkeys = random.split(key, 4)
 us = random.uniform(subkeys[0], (S,2))
 ds = random.normal(subkeys[1], (S,D))
@@ -358,6 +395,8 @@ losses = [0.0]
 # set up iters
 S = 64
 num_iters = int(np.ceil(len(train_images) / S))
+# print
+print("Number of iters: ", num_iters)
 
 @jit
 def batch_indices(iter):
@@ -417,13 +456,13 @@ def plot_update(xs, theta, key):
     plt.imshow(x_images[6].reshape((28,28)), cmap="gray", vmin=0.0, vmax=1.0)    
     plt.subplot(339)
     plt.imshow(x_images[7].reshape((28,28)), cmap="gray", vmin=0.0, vmax=1.0)   
-    plt.pause(0.01)
+
     return key 
 
 import time
 t1 = time.time()
 fig = plt.figure(figsize=[8,6])
-num_epochs = 1
+num_epochs = 5
 #pbar = trange(num_iters*num_epochs)
 #pbar.set_description("Loss: {:.1f}".format(losses[0]))
 for epoch in range(num_epochs):
@@ -451,14 +490,15 @@ for epoch in range(num_epochs):
 
         losses.append(total_loss(xs[1:], ys, theta))
         if np.mod(i,10)==0:
-            key = plot_update(xs, theta, key)
+            # key = plot_update(xs, theta, key)
             t2=time.time()
             print("Epoch: ", epoch, "Iter: ", i, "Loss: ", losses[-1], "Time: ", t2-t1)
 
         # if np.mod(i,250)==0:
-            # np.savez("mmdgan_weights_64_v4.npz", theta=theta, losses=np.array(losses), num_epochs=num_epochs, m=m, v=v, adam_iter=adam_iter)
+        #     np.savez("mmdgan_weights_64_v4.npz", theta=theta, losses=np.array(losses), num_epochs=num_epochs, m=m, v=v, adam_iter=adam_iter)
 
-# np.savez("mmdgan_weights_64_v4.npz", theta=theta, losses=np.array(losses), num_epochs=num_epochs, m=m, v=v, adam_iter=adam_iter)
+np.savez(f"mmdgan_weights_epochs{num_epochs}_iters_{GPU_MULTIPLIER*num_iters}_v4.npz", 
+         theta=theta, losses=np.array(losses), num_epochs=num_epochs, m=m, v=v, adam_iter=adam_iter)
 
 # investigate learned network
 key, *subkeys = random.split(key, 4)
